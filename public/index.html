@@ -88,7 +88,26 @@
           <button class="btn btn-secondary" id="btnUndo" disabled>↶ 撤销</button>
           <button class="btn btn-secondary" id="btnClear" disabled>🗑 清空</button>
           <button class="btn btn-primary" id="btnValidate">✅ 提交校验</button>
+          <button class="btn btn-assist" id="btnAssist">💡 求助手建议</button>
           <button class="btn btn-premium" id="btnPremium" disabled>👑 解锁高端包装</button>
+        </div>
+
+        <div class="assist-panel" id="assistPanel" style="display: none;">
+          <div class="assist-header">
+            <span class="assist-title">💡 智能搭配助手</span>
+            <select id="assistStrategy" class="assist-strategy">
+              <option value="min-change">最小改动合规</option>
+              <option value="min-cost">成本最优合规</option>
+            </select>
+            <button class="assist-close" id="assistClose">×</button>
+          </div>
+          <div class="assist-content" id="assistContent">
+            <p class="assist-placeholder">选择策略后点击「求助手建议」获取整改方案</p>
+          </div>
+          <div class="assist-actions" id="assistActions" style="display: none;">
+            <button class="btn btn-primary btn-sm" id="btnApplyAll">一键应用整套</button>
+            <button class="btn btn-secondary btn-sm" id="btnCancelAssist">取消预览</button>
+          </div>
         </div>
 
         <div class="premium-status">

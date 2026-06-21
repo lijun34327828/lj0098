@@ -546,8 +546,444 @@ if (selfCheck.warnings.length === 0) {
 }
 console.log('═══════════════════════════════════════════');
 
+function computeAssemblyStats(items) {
+  const categoryCounts = { fruits: 0, meat: 0, dried: 0 };
+  let totalWeight = 0;
+  let totalPrice = 0;
+  const ids = new Set();
+
+  items.forEach(item => {
+    const mat = getMaterialById(item.id);
+    if (mat) {
+      categoryCounts[mat.category]++;
+      totalWeight += mat.weight * (item.quantity || 1);
+      totalPrice += mat.price * (item.quantity || 1);
+      ids.add(mat.id);
+    }
+  });
+
+  return { categoryCounts, totalWeight, totalPrice, ids };
+}
+
+function buildItemsFromIds(idList) {
+  return idList.map(id => {
+    const m = getMaterialById(id);
+    return { id, name: m ? m.name : id, price: m ? m.price : 0, weight: m ? m.weight : 0 };
+  });
+}
+
+function solveSuggestion(levelId, currentItems, strategy) {
+  const level = levels.find(l => l.id === levelId);
+  if (!level) {
+    return { feasible: false, reason: '关卡不存在', stuckAt: 'level' };
+  }
+
+  const currentIds = currentItems.map(it => it.id);
+  const currentIdSet = new Set(currentIds);
+  const allMats = getAllMaterials();
+  const matMap = new Map(allMats.map(m => [m.id, m]));
+
+  const requiredIds = level.required || [];
+  const requiredSet = new Set(requiredIds);
+
+  const missingRequired = requiredIds.filter(id => !currentIdSet.has(id));
+  const extraNonRequiredCount = currentIds.filter(id => !requiredSet.has(id)).length;
+
+  const cons = level.constraints;
+  const weightMax = cons.totalWeight.max;
+  const priceMin = cons.totalPrice.min;
+  const priceMax = cons.totalPrice.max;
+
+  const GRID_CAPACITY = 16;
+  const TIME_LIMIT_MS = 3000;
+  const startTime = Date.now();
+  let timedOut = false;
+  let bestSolution = null;
+  let bestScore = Infinity;
+  let bestPriceDiff = Infinity;
+  let statesExplored = 0;
+
+  function checkTimeout() {
+    if (Date.now() - startTime > TIME_LIMIT_MS) {
+      timedOut = true;
+      return true;
+    }
+    return false;
+  }
+
+  function computePriceDiff(price) {
+    return Math.abs(price - (priceMin + priceMax) / 2);
+  }
+
+  function isBetter(newIds, newPrice) {
+    const addCount = newIds.filter(id => !currentIdSet.has(id)).length;
+    const removeCount = currentIds.filter(id => !new Set(newIds).has(id)).length;
+    const steps = addCount + removeCount;
+
+    if (strategy === 'min-change') {
+      if (steps < bestScore) return true;
+      if (steps === bestScore) {
+        return computePriceDiff(newPrice) < bestPriceDiff;
+      }
+      return false;
+    } else {
+      if (newPrice < bestScore) return true;
+      if (newPrice === bestScore) {
+        return steps < bestPriceDiff;
+      }
+      return false;
+    }
+  }
+
+  function updateBest(newIds) {
+    const idSet = new Set(newIds);
+    const items = newIds.map(id => ({ id, quantity: 1 }));
+    const stats = computeAssemblyStats(items);
+
+    if (strategy === 'min-change') {
+      const addCount = newIds.filter(id => !currentIdSet.has(id)).length;
+      const removeCount = currentIds.filter(id => !idSet.has(id)).length;
+      const steps = addCount + removeCount;
+      const priceDiff = computePriceDiff(stats.totalPrice);
+
+      if (steps < bestScore || (steps === bestScore && priceDiff < bestPriceDiff)) {
+        bestScore = steps;
+        bestPriceDiff = priceDiff;
+        bestSolution = { ids: newIds.slice(), stats };
+        return true;
+      }
+    } else {
+      const addCount = newIds.filter(id => !currentIdSet.has(id)).length;
+      const removeCount = currentIds.filter(id => !idSet.has(id)).length;
+      const steps = addCount + removeCount;
+
+      if (stats.totalPrice < bestScore || (stats.totalPrice === bestScore && steps < bestPriceDiff)) {
+        bestScore = stats.totalPrice;
+        bestPriceDiff = steps;
+        bestSolution = { ids: newIds.slice(), stats };
+        return true;
+      }
+    }
+    return false;
+  }
+
+  const nonRequiredMats = allMats.filter(m => !requiredSet.has(m.id));
+  const byCategory = {
+    fruits: nonRequiredMats.filter(m => m.category === 'fruits'),
+    meat: nonRequiredMats.filter(m => m.category === 'meat'),
+    dried: nonRequiredMats.filter(m => m.category === 'dried')
+  };
+
+  if (strategy === 'min-cost') {
+    byCategory.fruits.sort((a, b) => a.price - b.price);
+    byCategory.meat.sort((a, b) => a.price - b.price);
+    byCategory.dried.sort((a, b) => a.price - b.price);
+  } else {
+    byCategory.fruits.sort((a, b) => {
+      const aIn = currentIdSet.has(a.id) ? 0 : 1;
+      const bIn = currentIdSet.has(b.id) ? 0 : 1;
+      if (aIn !== bIn) return aIn - bIn;
+      return a.price - b.price;
+    });
+    byCategory.meat.sort((a, b) => {
+      const aIn = currentIdSet.has(a.id) ? 0 : 1;
+      const bIn = currentIdSet.has(b.id) ? 0 : 1;
+      if (aIn !== bIn) return aIn - bIn;
+      return a.price - b.price;
+    });
+    byCategory.dried.sort((a, b) => {
+      const aIn = currentIdSet.has(a.id) ? 0 : 1;
+      const bIn = currentIdSet.has(b.id) ? 0 : 1;
+      if (aIn !== bIn) return aIn - bIn;
+      return a.price - b.price;
+    });
+  }
+
+  const reqCategoryCount = { fruits: 0, meat: 0, dried: 0 };
+  let reqWeight = 0;
+  let reqPrice = 0;
+  for (const id of requiredIds) {
+    const m = matMap.get(id);
+    if (m) {
+      reqCategoryCount[m.category]++;
+      reqWeight += m.weight;
+      reqPrice += m.price;
+    }
+  }
+
+  for (const cat of ['fruits', 'meat', 'dried']) {
+    if (reqCategoryCount[cat] > cons[cat].max) {
+      return { feasible: false, reason: `必备食材中${catName(cat)}有${reqCategoryCount[cat]}种，超出上限${cons[cat].max}`, stuckAt: 'required' };
+    }
+  }
+
+  if (reqWeight > weightMax) {
+    return { feasible: false, reason: `必备食材总重${reqWeight}g已超重，上限${weightMax}g`, stuckAt: 'weight' };
+  }
+  if (reqPrice > priceMax) {
+    return { feasible: false, reason: `必备食材总价¥${reqPrice}已超上限，上限¥${priceMax}`, stuckAt: 'price' };
+  }
+
+  const effectiveMin = {
+    fruits: Math.max(0, cons.fruits.min - reqCategoryCount.fruits),
+    meat: Math.max(0, cons.meat.min - reqCategoryCount.meat),
+    dried: Math.max(0, cons.dried.min - reqCategoryCount.dried)
+  };
+  const effectiveMax = {
+    fruits: cons.fruits.max - reqCategoryCount.fruits,
+    meat: cons.meat.max - reqCategoryCount.meat,
+    dried: cons.dried.max - reqCategoryCount.dried
+  };
+
+  for (const cat of ['fruits', 'meat', 'dried']) {
+    if (byCategory[cat].length < effectiveMin[cat]) {
+      return { feasible: false, reason: `${catName(cat)}非必备素材只有${byCategory[cat].length}种，至少需要${effectiveMin[cat]}种`, stuckAt: 'quantity' };
+    }
+  }
+
+  const remainWeightMax = weightMax - reqWeight;
+  const remainPriceMin = Math.max(0, priceMin - reqPrice);
+  const remainPriceMax = priceMax - reqPrice;
+
+  if (remainPriceMax < 0) {
+    return { feasible: false, reason: '必备食材总价已超价格上限', stuckAt: 'price' };
+  }
+
+  const maxTotalExtra = Math.min(
+    GRID_CAPACITY - requiredIds.length,
+    effectiveMax.fruits + effectiveMax.meat + effectiveMax.dried
+  );
+
+  function getMinPossibleForRemaining(startIdx, catCounts, priceSoFar) {
+    let minPrice = 0;
+    const remainingNeeded = {
+      fruits: Math.max(0, effectiveMin.fruits - catCounts.fruits),
+      meat: Math.max(0, effectiveMin.meat - catCounts.meat),
+      dried: Math.max(0, effectiveMin.dried - catCounts.dried)
+    };
+
+    for (const cat of ['fruits', 'meat', 'dried']) {
+      if (remainingNeeded[cat] > 0) {
+        const catMats = byCategory[cat].filter((_, i) => {
+          const globalIdx = getGlobalIndex(cat, byCategory[cat][i]);
+          return globalIdx >= startIdx;
+        });
+        if (catMats.length < remainingNeeded[cat]) return Infinity;
+        for (let i = 0; i < remainingNeeded[cat]; i++) {
+          minPrice += catMats[i].price;
+        }
+      }
+    }
+    return priceSoFar + minPrice;
+  }
+
+  function getGlobalIndex(cat, mat) {
+    let idx = 0;
+    const order = ['fruits', 'meat', 'dried'];
+    for (const c of order) {
+      if (c === cat) {
+        idx += byCategory[c].indexOf(mat);
+        break;
+      }
+      idx += byCategory[c].length;
+    }
+    return idx;
+  }
+
+  const candidates = [];
+  for (const cat of ['fruits', 'meat', 'dried']) {
+    for (const m of byCategory[cat]) {
+      candidates.push({ ...m, cat });
+    }
+  }
+
+  function countRemainingCat(fromIdx, cat) {
+    let n = 0;
+    for (let i = fromIdx; i < candidates.length; i++) {
+      if (candidates[i].cat === cat) n++;
+    }
+    return n;
+  }
+
+  function minPriceRemaining(fromIdx, neededByCat) {
+    let total = 0;
+    for (const cat of ['fruits', 'meat', 'dried']) {
+      let need = neededByCat[cat];
+      if (need <= 0) continue;
+      let found = 0;
+      for (let i = fromIdx; i < candidates.length && found < need; i++) {
+        if (candidates[i].cat === cat) {
+          total += candidates[i].price;
+          found++;
+        }
+      }
+      if (found < need) return Infinity;
+    }
+    return total;
+  }
+
+  function dfs(idx, picked, catCounts, weight, price) {
+    if (checkTimeout()) return null;
+    statesExplored++;
+
+    if (weight > remainWeightMax) return null;
+    if (price > remainPriceMax) return null;
+    if (picked.length > maxTotalExtra) return null;
+
+    for (const cat of ['fruits', 'meat', 'dried']) {
+      if (catCounts[cat] > effectiveMax[cat]) return null;
+      const remaining = countRemainingCat(idx, cat);
+      if (catCounts[cat] + remaining < effectiveMin[cat]) return null;
+    }
+
+    if (strategy === 'min-cost' && bestSolution) {
+      const neededByCat = {
+        fruits: Math.max(0, effectiveMin.fruits - catCounts.fruits),
+        meat: Math.max(0, effectiveMin.meat - catCounts.meat),
+        dried: Math.max(0, effectiveMin.dried - catCounts.dried)
+      };
+      const minRestPrice = minPriceRemaining(idx, neededByCat);
+      if (price + minRestPrice >= bestScore) return null;
+    }
+
+    if (strategy === 'min-change' && bestSolution) {
+      const addsNeeded = picked.filter(m => !currentIdSet.has(m.id)).length;
+      const removesWillHappen = Math.max(0, extraNonRequiredCount - picked.length);
+      const minSteps = addsNeeded + removesWillHappen;
+      if (minSteps > bestScore) return null;
+    }
+
+    const allMinMet = ['fruits', 'meat', 'dried'].every(cat => catCounts[cat] >= effectiveMin[cat]);
+    const priceMet = price >= remainPriceMin;
+
+    if (allMinMet && priceMet) {
+      const newIds = [...requiredIds, ...picked.map(m => m.id)];
+      updateBest(newIds);
+    }
+
+    if (idx >= candidates.length) return null;
+
+    const cur = candidates[idx];
+    const newCatCounts = { ...catCounts, [cur.cat]: catCounts[cur.cat] + 1 };
+    const takeIt = dfs(
+      idx + 1,
+      [...picked, cur],
+      newCatCounts,
+      weight + cur.weight,
+      price + cur.price
+    );
+    if (takeIt) return takeIt;
+
+    const skipIt = dfs(idx + 1, picked, catCounts, weight, price);
+    if (skipIt) return skipIt;
+
+    return null;
+  }
+
+  dfs(0, [], { fruits: 0, meat: 0, dried: 0 }, 0, 0);
+
+  if (!bestSolution) {
+    return { feasible: false, reason: '在品类、重量、价格、必备食材的多重约束下，找不到任何合法组合', stuckAt: 'combined' };
+  }
+
+  const finalIds = bestSolution.ids;
+  const finalIdSet = new Set(finalIds);
+
+  const toAdd = finalIds.filter(id => !currentIdSet.has(id));
+  const toRemove = currentIds.filter(id => !finalIdSet.has(id));
+
+  const finalItems = finalIds.map(id => ({ id, quantity: 1 }));
+  const finalStats = computeAssemblyStats(finalItems);
+
+  const canUnlockPremium = (premiumUnlockCounts[levelId] || 0) < level.premiumUnlockLimit;
+
+  return {
+    feasible: true,
+    isOptimal: !timedOut,
+    toAdd,
+    toRemove,
+    result: {
+      items: buildItemsFromIds(finalIds),
+      summary: {
+        categoryCounts: finalStats.categoryCounts,
+        totalWeight: finalStats.totalWeight,
+        totalPrice: finalStats.totalPrice
+      }
+    },
+    canUnlockPremium,
+    stats: {
+      statesExplored,
+      timeMs: Date.now() - startTime
+    }
+  };
+}
+
+app.post('/api/suggest', (req, res) => {
+  const { levelId, assembly, strategy = 'min-change' } = req.body;
+
+  if (!levelId) {
+    return res.status(400).json({ success: false, message: '缺少关卡ID' });
+  }
+  if (!assembly || !Array.isArray(assembly.items)) {
+    return res.status(400).json({ success: false, message: '缺少合法的礼盒素材清单' });
+  }
+  if (!['min-change', 'min-cost'].includes(strategy)) {
+    return res.status(400).json({ success: false, message: '不支持的策略类型' });
+  }
+
+  const currentItems = assembly.items.map(it => ({ id: it.id, quantity: it.quantity || 1 }));
+
+  try {
+    const result = solveSuggestion(parseInt(levelId), currentItems, strategy);
+
+    if (!result.feasible) {
+      return res.json({
+        success: true,
+        data: {
+          feasible: false,
+          reason: result.reason,
+          stuckAt: result.stuckAt
+        }
+      });
+    }
+
+    const addMaterials = result.toAdd.map(id => {
+      const m = getMaterialById(id);
+      return m ? { id: m.id, name: m.name, emoji: m.emoji, category: m.category, weight: m.weight, price: m.price } : { id };
+    });
+    const removeMaterials = result.toRemove.map(id => {
+      const m = getMaterialById(id);
+      return m ? { id: m.id, name: m.name, emoji: m.emoji, category: m.category, weight: m.weight, price: m.price } : { id };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        feasible: true,
+        isOptimal: result.isOptimal,
+        strategy,
+        toAdd: addMaterials,
+        toRemove: removeMaterials,
+        result: {
+          items: result.result.items.map(it => ({
+            id: it.id,
+            name: it.name,
+            quantity: 1
+          })),
+          summary: result.result.summary
+        },
+        canUnlockPremium: result.canUnlockPremium
+      }
+    });
+  } catch (e) {
+    console.error('建议计算出错:', e);
+    res.status(500).json({ success: false, message: '建议计算过程中发生错误' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`🎁 礼盒搭配校验服务已启动: http://localhost:${PORT}`);
   console.log(`   校验服务端口: 9878`);
   console.log(`   网格礼盒画布: 3874`);
+  console.log(`   智能建议接口: /api/suggest`);
 });

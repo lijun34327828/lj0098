@@ -4,7 +4,11 @@ const state = {
   boxItems: [],
   history: [],
   gridSize: { rows: 4, cols: 4 },
-  premiumUnlocked: false
+  premiumUnlocked: false,
+  suggestion: null,
+  appliedAdds: new Set(),
+  appliedRemoves: new Set(),
+  assistPanelOpen: false
 };
 
 const API_BASE = '/api';
@@ -99,6 +103,11 @@ function bindEvents() {
   document.getElementById('btnClear').addEventListener('click', handleClear);
   document.getElementById('btnValidate').addEventListener('click', handleValidate);
   document.getElementById('btnPremium').addEventListener('click', handleUnlockPremium);
+  document.getElementById('btnAssist').addEventListener('click', handleAssistToggle);
+  document.getElementById('assistClose').addEventListener('click', closeAssistPanel);
+  document.getElementById('assistStrategy').addEventListener('change', handleStrategyChange);
+  document.getElementById('btnApplyAll').addEventListener('click', applyAllSuggestions);
+  document.getElementById('btnCancelAssist').addEventListener('click', cancelSuggestion);
   document.getElementById('modalClose').addEventListener('click', closeModal);
   document.getElementById('modalConfirm').addEventListener('click', closeModal);
   document.getElementById('resultModal').addEventListener('click', (e) => {
@@ -147,6 +156,7 @@ function handleDrop(e) {
     quantity: 1
   });
   
+  clearSuggestionState();
   renderBox();
   updateConstraints();
   updateButtons();
@@ -160,6 +170,7 @@ function handleCellClick(e) {
   if (itemIndex > -1) {
     saveHistory();
     state.boxItems.splice(itemIndex, 1);
+    clearSuggestionState();
     renderBox();
     updateConstraints();
     updateButtons();
@@ -331,6 +342,7 @@ function handleUndo() {
   if (state.history.length === 0) return;
   
   state.boxItems = state.history.pop();
+  clearSuggestionState();
   renderBox();
   updateConstraints();
   updateButtons();
@@ -341,6 +353,7 @@ function handleClear() {
   
   saveHistory();
   state.boxItems = [];
+  clearSuggestionState();
   renderBox();
   updateConstraints();
   updateButtons();
@@ -350,6 +363,7 @@ function resetBox() {
   state.boxItems = [];
   state.history = [];
   state.premiumUnlocked = false;
+  clearSuggestionState();
   renderBox();
   updateConstraints();
   updateButtons();
@@ -358,6 +372,20 @@ function resetBox() {
   
   const giftBox = document.getElementById('giftBox');
   giftBox.classList.remove('premium');
+}
+
+function clearSuggestionState() {
+  if (state.suggestion) {
+    state.suggestion = null;
+    state.appliedAdds.clear();
+    state.appliedRemoves.clear();
+    if (state.assistPanelOpen) {
+      const content = document.getElementById('assistContent');
+      content.innerHTML = '<p class="assist-placeholder">礼盒内容已变化，点击「求助手建议」重新生成方案</p>';
+      document.getElementById('assistActions').style.display = 'none';
+    }
+    clearSuggestionOverlay();
+  }
 }
 
 function updateButtons() {
@@ -538,6 +566,508 @@ function showModal(title, content) {
 
 function closeModal() {
   document.getElementById('resultModal').classList.remove('show');
+}
+
+function handleAssistToggle() {
+  if (!state.currentLevel) {
+    showModal('提示', '<p>请先选择关卡</p>');
+    return;
+  }
+  
+  const panel = document.getElementById('assistPanel');
+  if (state.assistPanelOpen && state.suggestion) {
+    closeAssistPanel();
+  } else {
+    openAssistPanel();
+    if (!state.suggestion) {
+      fetchSuggestion();
+    }
+  }
+}
+
+function openAssistPanel() {
+  state.assistPanelOpen = true;
+  document.getElementById('assistPanel').style.display = 'block';
+  updateAssistButtonState();
+}
+
+function closeAssistPanel() {
+  state.assistPanelOpen = false;
+  document.getElementById('assistPanel').style.display = 'none';
+  clearSuggestionOverlay();
+  updateAssistButtonState();
+}
+
+function updateAssistButtonState() {
+  const btn = document.getElementById('btnAssist');
+  if (state.assistPanelOpen) {
+    btn.textContent = '💡 收起助手';
+  } else {
+    btn.textContent = '💡 求助手建议';
+  }
+}
+
+function handleStrategyChange() {
+  if (state.suggestion && state.suggestion.strategy !== document.getElementById('assistStrategy').value) {
+    fetchSuggestion();
+  }
+}
+
+async function fetchSuggestion() {
+  const strategy = document.getElementById('assistStrategy').value;
+  const content = document.getElementById('assistContent');
+  const actions = document.getElementById('assistActions');
+  
+  content.innerHTML = `
+    <div class="assist-loading">
+      <div class="spinner"></div>
+      <p style="color: #666; font-size: 13px;">正在计算最优方案...</p>
+    </div>
+  `;
+  actions.style.display = 'none';
+
+  const assembly = {
+    items: state.boxItems.map(item => ({ id: item.id, quantity: item.quantity }))
+  };
+
+  try {
+    const res = await fetch(`${API_BASE}/suggest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        levelId: state.currentLevel.id,
+        assembly,
+        strategy
+      })
+    });
+    
+    const data = await res.json();
+    if (data.success) {
+      state.suggestion = data.data;
+      state.appliedAdds = new Set();
+      state.appliedRemoves = new Set();
+      renderSuggestion();
+      renderSuggestionOverlay();
+    } else {
+      content.innerHTML = `
+        <div class="assist-unreachable">
+          <div class="icon">❌</div>
+          <div class="title">获取建议失败</div>
+          <div class="reason">${data.message || '请稍后重试'}</div>
+        </div>
+      `;
+    }
+  } catch (e) {
+    console.error('获取建议失败:', e);
+    content.innerHTML = `
+      <div class="assist-unreachable">
+        <div class="icon">🌐</div>
+        <div class="title">网络错误</div>
+        <div class="reason">获取建议请求失败，请检查网络连接</div>
+      </div>
+    `;
+  }
+}
+
+function renderSuggestion() {
+  const content = document.getElementById('assistContent');
+  const actions = document.getElementById('assistActions');
+  const s = state.suggestion;
+
+  if (!s.feasible) {
+    actions.style.display = 'none';
+    const stuckLabels = {
+      level: '关卡不存在',
+      required: '必备食材约束',
+      quantity: '品类数量约束',
+      weight: '重量约束',
+      price: '价格约束',
+      combined: '多重约束组合'
+    };
+    content.innerHTML = `
+      <div class="assist-unreachable">
+        <div class="icon">🚫</div>
+        <div class="title">本关无解</div>
+        <div class="reason">
+          <p style="margin-bottom: 8px;"><strong>卡壳在：${stuckLabels[s.stuckAt] || s.stuckAt}</strong></p>
+          <p>${s.reason}</p>
+        </div>
+      </div>
+    `;
+    clearSuggestionOverlay();
+    return;
+  }
+
+  actions.style.display = 'flex';
+
+  const strategyLabels = {
+    'min-change': '最小改动合规',
+    'min-cost': '成本最优合规'
+  };
+
+  const summaryClass = s.isOptimal ? 'optimal' : 'suboptimal';
+  const badgeClass = s.isOptimal ? 'optimal' : 'suboptimal';
+  const badgeText = s.isOptimal ? '最优解' : '近似解（超时）';
+
+  const addCount = s.toAdd.length;
+  const removeCount = s.toRemove.length;
+
+  let addHtml = '';
+  if (s.toAdd.length > 0) {
+    addHtml = `
+      <div class="assist-section">
+        <div class="assist-section-title add">➕ 拟新增 (${s.toAdd.length}种)</div>
+        <div class="assist-item-list">
+          ${s.toAdd.map(m => `
+            <div class="assist-item add" data-material-id="${m.id}" data-action="add" onclick="handleSingleSuggestionClick('${m.id}', 'add')">
+              <span class="emoji">${m.emoji}</span>
+              <span>${m.name}</span>
+              <span class="apply-btn">点我应用</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  let removeHtml = '';
+  if (s.toRemove.length > 0) {
+    removeHtml = `
+      <div class="assist-section">
+        <div class="assist-section-title remove">➖ 拟移除 (${s.toRemove.length}种)</div>
+        <div class="assist-item-list">
+          ${s.toRemove.map(m => `
+            <div class="assist-item remove" data-material-id="${m.id}" data-action="remove" onclick="handleSingleSuggestionClick('${m.id}', 'remove')">
+              <span class="emoji">${m.emoji}</span>
+              <span>${m.name}</span>
+              <span class="apply-btn">点我应用</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  const summaryData = s.result.summary;
+
+  let premiumHtml = '';
+  if (s.canUnlockPremium) {
+    premiumHtml = '<div class="assist-premium-hint">👑 此方案可以解锁高端包装</div>';
+  }
+
+  content.innerHTML = `
+    <div class="assist-summary ${summaryClass}">
+      <strong>${strategyLabels[s.strategy] || s.strategy}</strong>
+      <span class="badge ${badgeClass}">${badgeText}</span>
+      <div style="margin-top: 4px; font-size: 12px; color: #666;">
+        ${addCount + removeCount > 0 
+          ? `共 ${addCount + removeCount} 步操作（新增 ${addCount} 种，移除 ${removeCount} 种`
+          : '当前礼盒已合规，无需改动'}
+      </div>
+    </div>
+    ${addHtml}
+    ${removeHtml}
+    <div class="assist-stats">
+      <div class="assist-stats-row">
+        <span>🍎 果蔬</span>
+        <span>${summaryData.categoryCounts.fruits} 种</span>
+      </div>
+      <div class="assist-stats-row">
+        <span>🥩 鲜肉</span>
+        <span>${summaryData.categoryCounts.meat} 种</span>
+      </div>
+      <div class="assist-stats-row">
+        <span>🍄 干货</span>
+        <span>${summaryData.categoryCounts.dried} 种</span>
+      </div>
+      <div class="assist-stats-row">
+        <span>⚖️ 总重量</span>
+        <span>${summaryData.totalWeight}g</span>
+      </div>
+      <div class="assist-stats-row">
+        <span>💰 总价</span>
+        <span>¥${summaryData.totalPrice}</span>
+      </div>
+    </div>
+    ${premiumHtml}
+  `;
+}
+
+function renderSuggestionOverlay() {
+  if (!state.suggestion || !state.suggestion.feasible) return;
+  
+  const s = state.suggestion;
+  const cells = document.querySelectorAll('.grid-cell');
+  
+  const addIds = new Set(s.toAdd.map(m => m.id));
+  const removeIds = new Set(s.toRemove.map(m => m.id));
+  
+  let emptyCellIndices = [];
+  for (let i = 0; i < 16; i++) {
+    const item = state.boxItems.find(it => it.cellIndex === i);
+    if (!item) emptyCellIndices.push(i);
+  }
+  
+  const addItemsToCells = [];
+  s.toAdd.forEach(m => {
+    const idx = emptyCellIndices.shift();
+    if (idx !== undefined) {
+      addItemsToCells.push({ material: m, cellIndex: idx });
+    }
+  });
+  
+  cells.forEach(cell => {
+    const index = parseInt(cell.dataset.index);
+    
+    const item = state.boxItems.find(it => it.cellIndex === index);
+    
+    if (item && removeIds.has(item.id) && !state.appliedRemoves.has(item.id)) {
+      cell.classList.add('suggest-remove');
+      const badge = document.createElement('span');
+      badge.className = 'suggest-remove-badge';
+      badge.textContent = '删';
+      cell.appendChild(badge);
+    }
+    
+    const addItem = addItemsToCells.find(a => a.cellIndex === index);
+    if (addItem && !state.appliedAdds.has(addItem.material.id)) {
+      cell.classList.add('suggest-add');
+      cell.classList.add('filled');
+      cell.innerHTML = `
+        <div class="cell-item">
+          <span class="cell-emoji">${addItem.material.emoji}</span>
+          <span class="cell-name">${addItem.material.name}</span>
+        </div>
+        <span class="suggest-add-badge">+</span>
+      `;
+    }
+  });
+  
+  state.suggestion._addMapping = addItemsToCells;
+}
+
+function clearSuggestionOverlay() {
+  const cells = document.querySelectorAll('.grid-cell');
+  cells.forEach(cell => {
+    cell.classList.remove('suggest-add', 'suggest-remove');
+    const addBadge = cell.querySelector('.suggest-add-badge');
+    if (addBadge && !cell.classList.contains('filled')) {
+      cell.classList.remove('filled');
+      cell.innerHTML = '';
+    } else if (addBadge) {
+      addBadge.remove();
+    }
+    const removeBadge = cell.querySelector('.suggest-remove-badge');
+    if (removeBadge) removeBadge.remove();
+  });
+  
+  renderBox();
+}
+
+function handleSingleSuggestionClick(materialId, action) {
+  if (action === 'add') {
+    if (state.appliedAdds.has(materialId)) return;
+    applySingleAdd(materialId);
+  } else {
+    if (state.appliedRemoves.has(materialId)) return;
+    applySingleRemove(materialId);
+  }
+}
+
+function applySingleAdd(materialId) {
+  const material = getMaterialById(materialId);
+  if (!material) return;
+  
+  let targetIndex = -1;
+  for (let i = 0; i < 16; i++) {
+    const item = state.boxItems.find(it => it.cellIndex === i);
+    if (!item) {
+      targetIndex = i;
+      break;
+    }
+  }
+  
+  if (targetIndex === -1) {
+    showModal('提示', '<p>礼盒已满，无法添加更多素材</p>');
+    return;
+  }
+  
+  saveHistory();
+  
+  state.boxItems.push({
+    ...material,
+    cellIndex: targetIndex,
+    quantity: 1
+  });
+  
+  state.appliedAdds.add(materialId);
+  
+  renderBox();
+  renderSuggestionOverlay();
+  updateConstraints();
+  updateButtons();
+  
+  updateSuggestionItemState(materialId, 'add');
+  checkAllApplied();
+}
+
+function applySingleRemove(materialId) {
+  const itemIndex = state.boxItems.findIndex(item => item.id === materialId);
+  if (itemIndex === -1) return;
+  
+  saveHistory();
+  
+  state.boxItems.splice(itemIndex, 1);
+  
+  state.appliedRemoves.add(materialId);
+  
+  renderBox();
+  renderSuggestionOverlay();
+  updateConstraints();
+  updateButtons();
+  
+  updateSuggestionItemState(materialId, 'remove');
+  checkAllApplied();
+}
+
+function updateSuggestionItemState(materialId, action) {
+  const el = document.querySelector(`.assist-item[data-material-id="${materialId}"][data-action="${action}"]`);
+  if (el) {
+    el.classList.add('applied');
+    const btn = el.querySelector('.apply-btn');
+    if (btn) {
+      btn.textContent = '已应用';
+    }
+  }
+}
+
+function checkAllApplied() {
+  if (!state.suggestion || !state.suggestion.feasible) return;
+  
+  const allAddsApplied = state.suggestion.toAdd.every(m => state.appliedAdds.has(m.id));
+  const allRemovesApplied = state.suggestion.toRemove.every(m => state.appliedRemoves.has(m.id));
+  
+  if (allAddsApplied && allRemovesApplied) {
+    state.suggestion = null;
+    state.appliedAdds.clear();
+    state.appliedRemoves.clear();
+    closeAssistPanel();
+    
+    const assembly = {
+      items: state.boxItems.map(item => ({ id: item.id, quantity: item.quantity }))
+    };
+    
+    fetch(`${API_BASE}/validate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ levelId: state.currentLevel.id, assembly })
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        displayValidationResult(data.data);
+      }
+    })
+    .catch(e => console.error(e));
+  }
+}
+
+function applyAllSuggestions() {
+  if (!state.suggestion || !state.suggestion.feasible) return;
+  
+  saveHistory();
+  
+  const s = state.suggestion;
+  const currentIds = new Set(state.boxItems.map(item => item.id));
+  
+  state.boxItems = state.boxItems.filter(item => {
+    return !s.toRemove.some(r => r.id === item.id);
+  });
+  
+  const occupiedIndices = new Set(state.boxItems.map(item => item.cellIndex));
+  let emptyIndices = [];
+  for (let i = 0; i < 16; i++) {
+    if (!occupiedIndices.has(i)) continue;
+    emptyIndices.push(i);
+  }
+  
+  emptyIndices = [];
+  for (let i = 0; i < 16; i++) {
+    const item = state.boxItems.find(it => it.cellIndex === i);
+    if (!item) emptyIndices.push(i);
+  }
+  
+  s.toAdd.forEach(m => {
+    if (emptyIndices.length > 0) {
+      const idx = emptyIndices.shift();
+      const material = getMaterialById(m.id);
+      if (material) {
+        state.boxItems.push({
+          ...material,
+          cellIndex: idx,
+          quantity: 1
+        });
+      }
+    }
+  });
+  
+  state.suggestion = null;
+  state.appliedAdds.clear();
+  state.appliedRemoves.clear();
+  
+  closeAssistPanel();
+  
+  const assembly = {
+    items: state.boxItems.map(item => ({ id: item.id, quantity: item.quantity }))
+  };
+  
+  fetch(`${API_BASE}/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ levelId: state.currentLevel.id, assembly })
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.success) {
+      displayValidationResult(data.data);
+      updatePremiumStatus();
+    }
+  })
+  .catch(e => console.error(e));
+  
+  renderBox();
+  updateConstraints();
+  updateButtons();
+}
+
+function cancelSuggestion() {
+  state.suggestion = null;
+  state.appliedAdds.clear();
+  state.appliedRemoves.clear();
+  closeAssistPanel();
+}
+
+function renderBox() {
+  const cells = document.querySelectorAll('.grid-cell');
+  
+  cells.forEach(cell => {
+    const index = parseInt(cell.dataset.index);
+    const item = state.boxItems.find(i => i.cellIndex === index);
+    
+    if (item) {
+      cell.classList.add('filled');
+      cell.innerHTML = `
+        <div class="cell-item">
+          <span class="cell-emoji">${item.emoji}</span>
+          <span class="cell-name">${item.name}</span>
+        </div>
+        <span class="cell-remove">×</span>
+      `;
+    } else {
+      cell.classList.remove('filled');
+      cell.innerHTML = '';
+    }
+  });
 }
 
 document.addEventListener('DOMContentLoaded', init);
