@@ -47,8 +47,7 @@ const levels = [
       meat: { min: 1, max: 3 },
       dried: { min: 1, max: 2 },
       totalWeight: { max: 2500 },
-      totalPrice: { min: 100, max: 300 },
-      required: ['apple', 'mooncake']
+      totalPrice: { min: 100, max: 300 }
     },
     required: ['apple', 'mushroom'],
     premiumUnlockLimit: 3
@@ -65,7 +64,7 @@ const levels = [
       meat: { min: 2, max: 4 },
       dried: { min: 2, max: 4 },
       totalWeight: { max: 4000 },
-      totalPrice: { min: 200, max: 500 },
+      totalPrice: { min: 200, max: 500 }
     },
     required: ['orange', 'date', 'beef'],
     premiumUnlockLimit: 2
@@ -82,7 +81,7 @@ const levels = [
       meat: { min: 2, max: 3 },
       dried: { min: 2, max: 3 },
       totalWeight: { max: 3000 },
-      totalPrice: { min: 150, max: 400 },
+      totalPrice: { min: 150, max: 400 }
     },
     required: ['pork', 'date', 'walnut'],
     premiumUnlockLimit: 4
@@ -293,6 +292,259 @@ app.get('/api/premium-status/:levelId', (req, res) => {
     }
   });
 });
+
+function getAllMaterials() {
+  return [...materials.fruits, ...materials.meat, ...materials.dried];
+}
+
+function checkLevelFeasibility(level) {
+  const allMats = getAllMaterials();
+  const matMap = new Map(allMats.map(m => [m.id, m]));
+
+  const requiredMats = (level.required || []).map(id => matMap.get(id)).filter(Boolean);
+  const requiredSet = new Set(level.required || []);
+
+  const categoryRanges = {
+    fruits: level.constraints.fruits,
+    meat: level.constraints.meat,
+    dried: level.constraints.dried
+  };
+
+  let baseWeight = 0, basePrice = 0;
+  const reqCategoryCount = { fruits: 0, meat: 0, dried: 0 };
+
+  for (const m of requiredMats) {
+    baseWeight += m.weight;
+    basePrice += m.price;
+    reqCategoryCount[m.category]++;
+  }
+
+  for (const cat of ['fruits', 'meat', 'dried']) {
+    if (reqCategoryCount[cat] > categoryRanges[cat].max) {
+      return { feasible: false, reason: `必备食材中${catName(cat)}有${reqCategoryCount[cat]}种，超出上限${categoryRanges[cat].max}` };
+    }
+    if (reqCategoryCount[cat] > categoryRanges[cat].min) {
+      categoryRanges[cat].effectiveMin = 0;
+    } else {
+      categoryRanges[cat].effectiveMin = categoryRanges[cat].min - reqCategoryCount[cat];
+    }
+    categoryRanges[cat].effectiveMax = categoryRanges[cat].max - reqCategoryCount[cat];
+  }
+
+  const nonRequired = allMats.filter(m => !requiredSet.has(m.id));
+  const byCategory = {
+    fruits: nonRequired.filter(m => m.category === 'fruits').sort((a, b) => a.price - b.price),
+    meat: nonRequired.filter(m => m.category === 'meat').sort((a, b) => a.price - b.price),
+    dried: nonRequired.filter(m => m.category === 'dried').sort((a, b) => a.price - b.price)
+  };
+
+  for (const cat of ['fruits', 'meat', 'dried']) {
+    if (byCategory[cat].length < categoryRanges[cat].effectiveMin) {
+      return { feasible: false, reason: `${catName(cat)}非必备素材只有${byCategory[cat].length}种，至少需要${categoryRanges[cat].effectiveMin}种` };
+    }
+  }
+
+  const weightMax = level.constraints.totalWeight.max;
+  const priceMin = level.constraints.totalPrice.min;
+  const priceMax = level.constraints.totalPrice.max;
+
+  const remainWeightMax = weightMax - baseWeight;
+  if (remainWeightMax < 0) {
+    return { feasible: false, reason: `必备食材总重${baseWeight}g已超重，上限${weightMax}g` };
+  }
+
+  const remainPriceMin = Math.max(0, priceMin - basePrice);
+  const remainPriceMax = priceMax - basePrice;
+  if (remainPriceMax < 0) {
+    return { feasible: false, reason: `必备食材总价¥${basePrice}已超上限，上限¥${priceMax}` };
+  }
+
+  const candidates = [];
+  for (const cat of ['fruits', 'meat', 'dried']) {
+    for (const m of byCategory[cat]) {
+      candidates.push({ ...m, cat });
+    }
+  }
+
+  function findCombination(idx, picked, catCount, weight, price, minToPick) {
+    if (picked.length > 16) return null;
+
+    let totalCats = { fruits: 0, meat: 0, dried: 0 };
+    for (const p of picked) totalCats[p.cat]++;
+
+    let valid = true;
+    for (const cat of ['fruits', 'meat', 'dried']) {
+      if (totalCats[cat] > categoryRanges[cat].effectiveMax) valid = false;
+      if (totalCats[cat] + countRemaining(candidates.slice(idx), cat) < categoryRanges[cat].effectiveMin) valid = false;
+    }
+    if (!valid) return null;
+
+    if (weight > remainWeightMax) return null;
+    if (price > remainPriceMax) return null;
+
+    const allMinMet = ['fruits', 'meat', 'dried'].every(cat => totalCats[cat] >= categoryRanges[cat].effectiveMin);
+    const priceMet = price >= remainPriceMin;
+
+    if (allMinMet && priceMet && picked.length >= minToPick) {
+      return picked.slice();
+    }
+
+    if (idx >= candidates.length) return null;
+
+    const maxPossibleWeight = weight + candidates.slice(idx).reduce((s, c) => s + c.weight, 0);
+    const maxPossiblePrice = price + candidates.slice(idx).reduce((s, c) => s + c.price, 0);
+    if (maxPossibleWeight < remainWeightMax && maxPossiblePrice < remainPriceMin) return null;
+
+    const cur = candidates[idx];
+    const take = findCombination(idx + 1, [...picked, cur], catCount, weight + cur.weight, price + cur.price, minToPick);
+    if (take) return take;
+
+    const skip = findCombination(idx + 1, picked, catCount, weight, price, minToPick);
+    if (skip) return skip;
+
+    return null;
+  }
+
+  const result = findCombination(0, [], { fruits: 0, meat: 0, dried: 0 }, 0, 0, 0);
+
+  if (!result) {
+    return { feasible: false, reason: '在品类、重量、价格、必备食材的多重约束下，找不到任何合法组合' };
+  }
+
+  return { feasible: true, witness: result };
+}
+
+function catName(cat) {
+  return { fruits: '果蔬', meat: '鲜肉', dried: '干货' }[cat] || cat;
+}
+
+function countRemaining(list, cat) {
+  let n = 0;
+  for (const m of list) if (m.cat === cat) n++;
+  return n;
+}
+
+function runLevelSelfCheck() {
+  const allMats = getAllMaterials();
+  const validIds = new Set(allMats.map(m => m.id));
+  const errors = [];
+  const warnings = [];
+  const levelMap = new Map();
+
+  for (const level of levels) {
+    const prefix = `【第${level.id}关·${level.name}】`;
+
+    if (levelMap.has(level.id)) {
+      errors.push(`${prefix}关卡ID重复，与其他关卡冲突`);
+    }
+    levelMap.set(level.id, level);
+
+    if (level.constraints && 'required' in level.constraints) {
+      warnings.push(`${prefix}constraints 内部残留了 required 字段，真正生效的是顶层 required，建议删除`);
+    }
+    if (level.constraints && level.constraints.required && Array.isArray(level.constraints.required)) {
+      if (Array.isArray(level.required) && JSON.stringify([...level.constraints.required].sort()) !== JSON.stringify([...level.required].sort())) {
+        errors.push(`${prefix}存在两份互相冲突的必备清单：constraints.required=[${level.constraints.required.join(',')}] vs 顶层 required=[${level.required.join(',')}]，请统一`);
+      }
+    }
+
+    const req = level.required || [];
+    const reqSeen = new Set();
+    for (const id of req) {
+      if (reqSeen.has(id)) {
+        warnings.push(`${prefix}必备食材「${id}」重复定义`);
+      }
+      reqSeen.add(id);
+      if (!validIds.has(id)) {
+        errors.push(`${prefix}必备食材引用了素材库中不存在的 id：${id}`);
+      }
+    }
+
+    const c = level.constraints;
+    if (!c) {
+      errors.push(`${prefix}缺少 constraints 约束定义`);
+      continue;
+    }
+    for (const cat of ['fruits', 'meat', 'dried']) {
+      if (!c[cat] || typeof c[cat].min !== 'number' || typeof c[cat].max !== 'number') {
+        errors.push(`${prefix}${catName(cat)}品类区间定义缺失或格式错误`);
+        continue;
+      }
+      if (c[cat].min < 0 || c[cat].max < 0) {
+        errors.push(`${prefix}${catName(cat)}品类区间含负数（min=${c[cat].min}, max=${c[cat].max}）`);
+      }
+      if (c[cat].min > c[cat].max) {
+        errors.push(`${prefix}${catName(cat)}品类区间下限${c[cat].min}大于上限${c[cat].max}`);
+      }
+      if (c[cat].max > 16) {
+        warnings.push(`${prefix}${catName(cat)}品类上限${c[cat].max}超过礼盒网格总容量16`);
+      }
+    }
+    if (!c.totalWeight || typeof c.totalWeight.max !== 'number') {
+      errors.push(`${prefix}总重量上限定义缺失`);
+    } else if (c.totalWeight.max <= 0) {
+      errors.push(`${prefix}总重量上限${c.totalWeight.max}必须为正数`);
+    }
+    if (!c.totalPrice || typeof c.totalPrice.min !== 'number' || typeof c.totalPrice.max !== 'number') {
+      errors.push(`${prefix}总价区间定义缺失或格式错误`);
+    } else {
+      if (c.totalPrice.min < 0 || c.totalPrice.max < 0) {
+        errors.push(`${prefix}总价区间含负数（min=${c.totalPrice.min}, max=${c.totalPrice.max}）`);
+      }
+      if (c.totalPrice.min > c.totalPrice.max) {
+        errors.push(`${prefix}总价区间下限¥${c.totalPrice.min}大于上限¥${c.totalPrice.max}`);
+      }
+    }
+
+    if (typeof level.premiumUnlockLimit !== 'number' || level.premiumUnlockLimit < 0) {
+      warnings.push(`${prefix}premiumUnlockLimit 定义异常（${level.premiumUnlockLimit}）`);
+    }
+  }
+
+  if (levels.length === 0) {
+    errors.push('没有定义任何关卡');
+  }
+
+  for (const level of levels) {
+    const prefix = `【第${level.id}关·${level.name}】`;
+    if (!level.constraints) continue;
+    const feas = checkLevelFeasibility(level);
+    if (!feas.feasible) {
+      errors.push(`${prefix}可行性校验失败：${feas.reason}`);
+    } else {
+      const witNames = feas.witness.map(m => m.name).join('、');
+      console.log(`  ✅ ${prefix} 存在合法解，例如：必备食材 + [${witNames || '（无需额外素材）'}]`);
+    }
+  }
+
+  return { errors, warnings };
+}
+
+console.log('═══════════════════════════════════════════');
+console.log('🔍 启动前关卡自检进行中...');
+console.log('───────────────────────────────────────────');
+const selfCheck = runLevelSelfCheck();
+console.log('───────────────────────────────────────────');
+
+if (selfCheck.warnings.length > 0) {
+  console.log('⚠️  自检发现以下警告：');
+  selfCheck.warnings.forEach(w => console.log(`   - ${w}`));
+}
+
+if (selfCheck.errors.length > 0) {
+  console.error('❌ 自检发现以下致命错误，启动被阻止：');
+  selfCheck.errors.forEach(e => console.error(`   ❗ ${e}`));
+  console.error('═══════════════════════════════════════════');
+  console.error('💥 服务启动失败：请修复上述关卡配置问题后重试。');
+  process.exit(1);
+}
+
+if (selfCheck.warnings.length === 0) {
+  console.log('✅ 关卡数据自检全部通过，未发现问题。');
+} else {
+  console.log('✅ 关卡自检致命错误已清除，仅存警告，继续启动。');
+}
+console.log('═══════════════════════════════════════════');
 
 app.listen(PORT, () => {
   console.log(`🎁 礼盒搭配校验服务已启动: http://localhost:${PORT}`);
