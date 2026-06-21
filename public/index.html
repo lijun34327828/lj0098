@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>礼盒搭配校验系统</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <h1>🎁 礼盒搭配校验系统</h1>
+      <div class="level-selector">
+        <label>选择关卡：</label>
+        <select id="levelSelect">
+          <option value="">-- 请选择场景 --</option>
+        </select>
+      </div>
+    </header>
+
+    <main class="main-content">
+      <aside class="materials-panel">
+        <h2>🥬 食材素材库</h2>
+        <div class="material-categories">
+          <div class="category-section">
+            <h3>🍎 果蔬类</h3>
+            <div class="material-list" id="fruitsList"></div>
+          </div>
+          <div class="category-section">
+            <h3>🥩 鲜肉类</h3>
+            <div class="material-list" id="meatList"></div>
+          </div>
+          <div class="category-section">
+            <h3>🍄 干货类</h3>
+            <div class="material-list" id="driedList"></div>
+          </div>
+        </div>
+      </aside>
+
+      <section class="assembly-area">
+        <div class="constraints-bar">
+          <div class="constraint-item" id="constraintFruits">
+            <span class="constraint-icon">🍎</span>
+            <span class="constraint-label">果蔬</span>
+            <span class="constraint-value" id="fruitsCount">0/0</span>
+          </div>
+          <div class="constraint-item" id="constraintMeat">
+            <span class="constraint-icon">🥩</span>
+            <span class="constraint-label">鲜肉</span>
+            <span class="constraint-value" id="meatCount">0/0</span>
+          </div>
+          <div class="constraint-item" id="constraintDried">
+            <span class="constraint-icon">🍄</span>
+            <span class="constraint-label">干货</span>
+            <span class="constraint-value" id="driedCount">0/0</span>
+          </div>
+          <div class="constraint-item" id="constraintWeight">
+            <span class="constraint-icon">⚖️</span>
+            <span class="constraint-label">重量</span>
+            <span class="constraint-value" id="weightValue">0g/0g</span>
+          </div>
+          <div class="constraint-item" id="constraintPrice">
+            <span class="constraint-icon">💰</span>
+            <span class="constraint-label">价格</span>
+            <span class="constraint-value" id="priceValue">¥0/¥0</span>
+          </div>
+        </div>
+
+        <div class="box-container" id="boxContainer">
+          <div class="gift-box" id="giftBox">
+            <div class="box-ribbon">
+              <div class="ribbon-horizontal"></div>
+              <div class="ribbon-vertical"></div>
+              <div class="ribbon-bow">🎀</div>
+            </div>
+            <div class="box-grid" id="boxGrid">
+            </div>
+            <div class="box-cover" id="boxCover"></div>
+          </div>
+        </div>
+
+        <div class="required-items">
+          <span class="required-label">📋 必备食材：</span>
+          <span id="requiredList" class="required-list"></span>
+        </div>
+
+        <div class="action-bar">
+          <button class="btn btn-secondary" id="btnUndo" disabled>↶ 撤销</button>
+          <button class="btn btn-secondary" id="btnClear" disabled>🗑 清空</button>
+          <button class="btn btn-primary" id="btnValidate">✅ 提交校验</button>
+          <button class="btn btn-premium" id="btnPremium" disabled>👑 解锁高端包装</button>
+        </div>
+
+        <div class="premium-status">
+          <span id="premiumStatusText">高端包装：未解锁</span>
+        </div>
+      </section>
+
+      <aside class="result-panel">
+        <h2>📊 校验结果</h2>
+        <div id="validationResult" class="validation-result">
+          <p class="placeholder">请选择关卡并组装礼盒后提交校验</p>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <div class="modal" id="resultModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modalTitle">校验结果</h3>
+        <button class="modal-close" id="modalClose">×</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="modalConfirm">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
